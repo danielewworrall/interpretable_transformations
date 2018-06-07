@@ -24,6 +24,7 @@ class Net(nn.Module):
         self.width = width
         self.device = device
 
+        # Init model layers
         self.down1 = nn.Linear(self.height*self.width, 600)
         self.down2 = nn.Linear(600, 400)
         self.down3 = nn.Linear(400, 400)
@@ -35,14 +36,14 @@ class Net(nn.Module):
     def forward(self, x, params):
         x = F.relu(self.down1(x))
         x = F.relu(self.down2(x))
-        x = self.down3(x)
+        x = self.down3(x)   # Must be linear layer!
 
         # Feature transform layer
         x = self.feature_transformer(x, params)
 
         x = F.relu(self.up3(x))
         x = F.relu(self.up2(x))
-        return F.sigmoid(self.up1(x))
+        return F.sigmoid(self.up1(x))   # Sigmoid output for MNIST
 
 
     def feature_transformer(self, input, params):
@@ -61,14 +62,16 @@ class Net(nn.Module):
         cos = torch.cos(params)
         transform = torch.cat([sin, -cos, cos, sin], 1)
         transform = transform.view(transform.size(0),1,2,2).to(self.device)
-        # Multiply
+        # Multiply: broadcasting taken care of automatically
+        # [N,1,2,2] @ [N,channels/2,2,1]
         output = torch.matmul(transform, x)
         # Reshape and return
         return output.view(input.size())
 
 
 def rotate_tensor(input):
-    """Nasty hack to rotate images in a minibatch
+    """Nasty hack to rotate images in a minibatch, this should be parallelized
+    and set in PyTorch
 
     Args:
         input: [N,c,h,w] **numpy** tensor
@@ -93,7 +96,6 @@ def train(args, model, device, train_loader, optimizer, epoch):
         targets = targets.view(targets.size(0), -1)
         angles = torch.from_numpy(angles).to(device)
         angles = angles.view(angles.size(0), 1)
-
         data = data.view(data.size(0), -1)
 
         # Forward pass
@@ -101,10 +103,9 @@ def train(args, model, device, train_loader, optimizer, epoch):
         optimizer.zero_grad()
         output = model(data, angles)
 
-        # L1 loss
+        # Binary cross entropy loss
         loss_fnc = nn.BCELoss(size_average=False)
         loss = loss_fnc(output, targets)
-        #loss = torch.mean(torch.sum(torch.abs(output - data), 1))
 
         # Backprop
         loss.backward()
@@ -120,7 +121,8 @@ def test(args, model, device, test_loader, epoch):
     model.eval()
     with torch.no_grad():
         for data, target in test_loader:
-            # Reshape data
+            # Reshape data: apply multiple angles to the same minibatch, hence
+            # repeat
             data = data.view(data.size(0), -1)
             data = data.repeat(args.test_batch_size,1)
 
@@ -182,6 +184,7 @@ def main():
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
+    # Set up dataloaders
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
     train_loader = torch.utils.data.DataLoader(
         datasets.MNIST('../data', train=True, download=True,
@@ -195,16 +198,18 @@ def main():
                        ])),
         batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
+    # Init model and optimizer
     model = Net(28,28,device).to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
+    # Where the magic happens
     for epoch in range(1, args.epochs + 1):
-
         train(args, model, device, train_loader, optimizer, epoch)
         test(args, model, device, test_loader, epoch)
 
 
 if __name__ == '__main__':
+    # Create save path
     path = "./output"
     if not os.path.exists(path):
         os.makedirs(path)
