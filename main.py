@@ -1,4 +1,5 @@
 from __future__ import print_function
+import os
 import sys
 import time
 
@@ -11,7 +12,9 @@ import torch.optim as optim
 import torchvision
 
 from matplotlib import pyplot as plt
+from scipy.ndimage.interpolation import rotate
 from torchvision import datasets, transforms
+
 
 class Net(nn.Module):
     def __init__(self, height, width, device):
@@ -23,8 +26,8 @@ class Net(nn.Module):
 
         self.down1 = nn.Linear(self.height*self.width, 600)
         self.down2 = nn.Linear(600, 400)
-        self.down3 = nn.Linear(400, 200)
-        self.up3 = nn.Linear(200, 400)
+        self.down3 = nn.Linear(400, 400)
+        self.up3 = nn.Linear(400, 400)
         self.up2 = nn.Linear(400, 600)
         self.up1 = nn.Linear(600, self.height*self.width)
 
@@ -64,21 +67,43 @@ class Net(nn.Module):
         return output.view(input.size())
 
 
+def rotate_tensor(input):
+    """Nasty hack to rotate images in a minibatch
+
+    Args:
+        input: [N,c,h,w] **numpy** tensor
+    Returns:
+        rotated output and angles in radians
+    """
+    angles = 2*np.pi*np.random.rand(input.shape[0])
+    angles = angles.astype(np.float32)
+    outputs = []
+    for i in range(input.shape[0]):
+        output = rotate(input[i,...], 180*angles[i]/np.pi, axes=(1,2), reshape=False)
+        outputs.append(output)
+    return np.stack(outputs, 0), angles
+
+
 def train(args, model, device, train_loader, optimizer, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         # Reshape data
+        targets, angles = rotate_tensor(data.numpy())
+        targets = torch.from_numpy(targets).to(device)
+        targets = targets.view(targets.size(0), -1)
+        angles = torch.from_numpy(angles).to(device)
+        angles = angles.view(angles.size(0), 1)
+
         data = data.view(data.size(0), -1)
-        params = torch.zeros(args.batch_size, 1)
 
         # Forward pass
         data = data.to(device)
         optimizer.zero_grad()
-        output = model(data, params)
+        output = model(data, angles)
 
         # L1 loss
         loss_fnc = nn.BCELoss(size_average=False)
-        loss = loss_fnc(output, data)
+        loss = loss_fnc(output, targets)
         #loss = torch.mean(torch.sum(torch.abs(output - data), 1))
 
         # Backprop
@@ -97,11 +122,16 @@ def test(args, model, device, test_loader, epoch):
         for data, target in test_loader:
             # Reshape data
             data = data.view(data.size(0), -1)
-            params = torch.zeros(args.test_batch_size, 1)
+            data = data.repeat(args.test_batch_size,1)
+
+            angles = torch.linspace(0, 2*np.pi, steps=args.test_batch_size)
+            angles = angles.view(args.test_batch_size, 1)
+            angles = angles.repeat(1, args.test_batch_size)
+            angles = angles.view(args.test_batch_size**2, 1)
 
             # Forward pass
             data = data.to(device)
-            output = model(data, params)
+            output = model(data, angles)
             break
         output = output.cpu()
         output = output.view(-1,1,28,28)
@@ -125,13 +155,14 @@ def save_images(images, epoch, nrow=None):
     plt.savefig("./output/epoch{:04d}".format(epoch))
     plt.close()
 
+
 def main():
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
-    parser.add_argument('--test-batch-size', type=int, default=100, metavar='N',
-                        help='input batch size for testing (default: 100)')
+    parser.add_argument('--test-batch-size', type=int, default=10, metavar='N',
+                        help='input batch size for testing (default: 10)')
     parser.add_argument('--epochs', type=int, default=100, metavar='N',
                         help='number of epochs to train (default: 100)')
     parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
@@ -174,4 +205,7 @@ def main():
 
 
 if __name__ == '__main__':
+    path = "./output"
+    if not os.path.exists(path):
+        os.makedirs(path)
     main()
