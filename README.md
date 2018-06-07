@@ -1,2 +1,2 @@
 # Interpretable Transformations
-Use a geometry-based prior to learn an equivariant CNN
+Toy example of interpretable transformations applied to rotations on the MNIST dataset
