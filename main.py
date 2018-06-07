@@ -19,19 +19,19 @@ class Net(nn.Module):
 
         self.height = height
         self.width = width
-        self.mid_shape = np.asarray([16,16])
-        self.num_mid = int(np.prod(self.mid_shape))
-        self.grid = self.create_grid((28,28))
+        self.num_mid = int(height*width / 2)
 
-        self.rc1 = self.create_receptive_fields(self.mid_shape)
-        self.fc1 = nn.Linear(self.height*self.width, self.num_mid)
-        self.fc2 = nn.Linear(self.num_mid, 10)
+        self.down1 = nn.Linear(self.height*self.width, self.num_mid)
+        self.down2 = nn.Linear(self.num_mid, 10)
+        self.up2 = nn.Linear(10, self.num_mid)
+        self.up1 = nn.Linear(self.num_mid, self.height*self.width)
+
 
     def forward(self, x):
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return F.log_softmax(x, dim=1)
+        x = F.relu(self.down1(x))
+        x = self.down2(x)
+        x = F.relu(self.up2(x))
+        return self.up1(x)
 
     def feature_transformer(self, input, params):
         """For now we assume the params are just a single rotation angle
@@ -39,7 +39,7 @@ class Net(nn.Module):
         Args:
             input: [N,c] tensor, where c = 2*int
             params: [N,1] tensor, with values in [0,2*pi)
-        Returns: 
+        Returns:
             [N,c] tensor
         """
         # First reshape activations into [N,c/2,2,1] matrices
@@ -57,12 +57,18 @@ class Net(nn.Module):
 def train(args, model, device, train_loader, optimizer, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(device), target.to(device)
+        # Reshape data
+        data = data.view(data.size(0), -1)
+
+        # Forward pass
+        data = data.to(device)
         optimizer.zero_grad()
         output = model(data)
-        loss = F.nll_loss(output, target)
-        loss += 100.*model.apply_rc_regularizer(model.fc1.weight, model.rc1.to(device))
 
+        # L1 loss
+        loss = torch.mean(torch.sum(torch.abs(output - data), 1))
+
+        # Backprop
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
@@ -74,20 +80,19 @@ def train(args, model, device, train_loader, optimizer, epoch):
 
 def test(args, model, device, test_loader):
     model.eval()
-    test_loss = 0
-    correct = 0
     with torch.no_grad():
         for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += F.nll_loss(output, target, size_average=False).item() # sum up batch loss
-            pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability
-            correct += pred.eq(target.view_as(pred)).sum().item()
+            # Reshape data
+            data = data.view(data.size(0), -1)
 
-    test_loss /= len(test_loader.dataset)
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset)))
+            # Forward pass
+            data = data.to(device)
+            output = model(data)
+            break
+        print(output.size())
+
+
+
 
 
 def view_images(images, nrow=None):
@@ -109,8 +114,8 @@ def main():
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
-    parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
-                        help='input batch size for testing (default: 1000)')
+    parser.add_argument('--test-batch-size', type=int, default=100, metavar='N',
+                        help='input batch size for testing (default: 100)')
     parser.add_argument('--epochs', type=int, default=100, metavar='N',
                         help='number of epochs to train (default: 100)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
@@ -148,12 +153,7 @@ def main():
     model = Net(28,28).to(device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
-    plt.figure(1, figsize=(12,12))
-    plt.show(block=False)
     for epoch in range(1, args.epochs + 1):
-        view_images(model.fc1.weight.data.cpu().view(-1,1,28,28))
-        plt.draw()
-        plt.pause(0.001)
 
         train(args, model, device, train_loader, optimizer, epoch)
         test(args, model, device, test_loader)
