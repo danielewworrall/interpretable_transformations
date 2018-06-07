@@ -33,92 +33,26 @@ class Net(nn.Module):
         x = self.fc2(x)
         return F.log_softmax(x, dim=1)
 
-    def create_receptive_fields(self, shape, sigma=5.):
-        """Return regularizers to encourage the formation of receptive fields
+    def feature_transformer(self, input, params):
+        """For now we assume the params are just a single rotation angle
 
         Args:
-            num_rc: number of receptive fields to use (int)
-            sigma: width of each receptive field (float)
-        Returns:
-            [num_rc, height*width] tensor of receptive field weights
+            input: [N,c] tensor, where c = 2*int
+            params: [N,1] tensor, with values in [0,2*pi)
+        Returns: 
+            [N,c] tensor
         """
-        cy = np.linspace(0.,self.height, num=shape[1]/2)
-        cy = np.stack([cy,cy],0)
-        cx = np.linspace(0.,self.width, num=shape[0]/2)
-        cx = np.stack([cx,cx],0)
-        cX, cY = np.meshgrid(cx, cy)
-        centers = np.stack([cX, cY], 0)
-        centers = centers[:,:,:,np.newaxis,np.newaxis]
+        # First reshape activations into [N,c/2,2,1] matrices
+        x = input.view(input.size(0),input.size(1)/2,2,1)
+        # Construct the transformation matrix
+        sin = torch.sin(params)
+        cos = torch.cos(params)
+        matrix = torch.concat([sin, -cos, cos, sin], )
+        # Multiply
+        output = transformation @ x
+        # Reshape and return
+        return output.view(input.size())
 
-        # Use a soft Gaussian receptive field
-        X, Y = np.meshgrid(np.arange(self.width), np.arange(self.height))
-        coords = np.stack([X, Y], 0)[:,np.newaxis,np.newaxis,:,:]
-        dist2 = np.sum(((coords - centers)/sigma)**2, axis=0)
-        dist2 = np.reshape(dist2, [np.prod(shape),-1]).astype(np.float32)
-        return torch.from_numpy(dist2)
-
-    def create_grid(self, shape):
-        """Create grid of positions
-
-        Args:
-            shape: 2d x and y positions (tuple/list)
-        Returns:
-            [2,x,y] coordinates
-        """
-        cy = np.arange(shape[1])
-        cx = np.arange(shape[0])
-        cX, cY = np.meshgrid(cx, cy)
-        return torch.from_numpy(np.stack([cX, cY], 0).astype(np.float32))
-
-    def apply_rc_regularizer(self, input, dist2):
-        """Apply the receptive field regularization
-
-        Args:
-            input: [o,i] tensor
-            dist2: [o,i] tensor of squared distances
-        Returns:
-            scalar loss
-        """
-        return torch.mean((input*dist2)**2)
-
-    def apply_locality_regularizer(self, input, grid, sigma=3.):
-        """Apply a receptive field regularizer with non-fixed center
-
-        Args:
-            input: [o,i] tensor
-            sigma: scalar width (float)
-        Returns:
-            scalar loss
-        """
-        # Compute mean position of activations
-        input = input.view(input.size(0),grid.size(1),grid.size(2))
-        input = input.unsqueeze(1)
-        grid = grid.unsqueeze(0)
-
-        # weights are the input
-        weights = torch.abs(input)
-
-        # integrate mean over position, weighted by input
-        mean = (weights * grid) / self.iter_sum(weights, 1)
-        mean = torch.sum(mean, 2, keepdim=True)
-        mean = torch.sum(mean, 3, keepdim=True)
-
-        # integrate squared distance over position, weighted by input
-        dist2 = (grid - mean)*(grid - mean)
-        dist2 = torch.sum(dist2, 1, keepdim=True)
-
-        spread = (weights * dist2) / self.iter_sum(weights, 1)
-        spread = torch.sum(spread, 1)
-        spread = torch.sum(spread, 1)
-        spread = torch.sum(spread, 1)
-
-        return torch.sum(spread)
-
-    def iter_sum(self, x, channel):
-        end = len(x.size())
-        for i in range(channel, end):
-            x = torch.sum(x, i, keepdim=True)
-        return x
 
 def train(args, model, device, train_loader, optimizer, epoch):
     model.train()
@@ -128,7 +62,6 @@ def train(args, model, device, train_loader, optimizer, epoch):
         output = model(data)
         loss = F.nll_loss(output, target)
         loss += 100.*model.apply_rc_regularizer(model.fc1.weight, model.rc1.to(device))
-        #loss += 0.01*model.apply_locality_regularizer(model.fc1.weight, model.grid.to(device))
 
         loss.backward()
         optimizer.step()
